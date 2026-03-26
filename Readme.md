@@ -12,6 +12,27 @@
 
 ---
 
+## Quick install
+
+Clone the repo and run the install script — it handles everything automatically:
+
+```bash
+git clone https://github.com/WladyslawTset/Quectel-Initialization.git
+cd Quectel-Initialization
+sudo ./install.sh
+```
+
+What `install.sh` does:
+- Installs required packages (`modemmanager`, `libqmi-utils`, `libmbim-utils`, `minicom`)
+- Enables and starts ModemManager
+- Deploys `quectel-connect.sh` to `/usr/local/bin/`
+- Deploys `quectel-watchdog.sh` to `/usr/local/bin/`
+- Creates and enables `quectel-connect.service` and `quectel-watchdog.service`
+
+After install, the modem connects automatically on every boot and the watchdog keeps it alive.
+
+---
+
 ## 1. Install packages
 
 ```bash
@@ -252,98 +273,55 @@ curl --interface wwan0 https://ipinfo.io/ip
 
 ## 8. Auto-connect on boot
 
-### Script `/home/notel/quectel-connect.sh`
+> **Note**: If you used `install.sh`, everything in this section is already configured automatically.
+
+### `quectel-connect.service` — one-time initialization
+
+Runs once at boot. Waits for the modem, connects via QMI, configures `wwan0` with IP/routing/DNS.
+
+Deployed to `/usr/local/bin/quectel-connect.sh` by `install.sh`.
 
 ```bash
-#!/bin/bash
-set -e
-
-MODEM_INDEX=""
-MAX_WAIT=60
-WAITED=0
-
-echo "[quectel] Waiting for modem..."
-while [ -z "$MODEM_INDEX" ]; do
-    MODEM_PATH=$(mmcli -L 2>/dev/null | grep -oP '/org/freedesktop/ModemManager1/Modem/\K[0-9]+' | head -1)
-    if [ -n "$MODEM_PATH" ]; then
-        MODEM_INDEX="$MODEM_PATH"
-        break
-    fi
-    sleep 2
-    WAITED=$((WAITED + 2))
-    [ $WAITED -ge $MAX_WAIT ] && echo "[quectel] ERROR: modem not found" && exit 1
-done
-
-echo "[quectel] Found modem index: $MODEM_INDEX"
-
-WAITED=0
-while true; do
-    STATE=$(mmcli -m "$MODEM_INDEX" 2>/dev/null | grep -oP '(?<=state: )[\w]+')
-    [ "$STATE" = "registered" ] || [ "$STATE" = "connected" ] && break
-    sleep 2
-    WAITED=$((WAITED + 2))
-    [ $WAITED -ge $MAX_WAIT ] && echo "[quectel] ERROR: not registered (state: $STATE)" && exit 1
-done
-
-if [ "$STATE" != "connected" ]; then
-    mmcli -m "$MODEM_INDEX" --simple-connect="apn=internet,ip-type=ipv4"
-fi
-
-BEARER_INDEX=$(mmcli -m "$MODEM_INDEX" 2>/dev/null | grep -oP '/org/freedesktop/ModemManager1/Bearer/\K[0-9]+' | tail -1)
-
-IP_ADDR=$(mmcli -b "$BEARER_INDEX" 2>/dev/null | grep -oP '(?<=address: )[\d.]+')
-IP_PREFIX=$(mmcli -b "$BEARER_INDEX" 2>/dev/null | grep -oP '(?<=prefix: )[\d]+')
-GW=$(mmcli -b "$BEARER_INDEX" 2>/dev/null | grep -oP '(?<=gateway: )[\d.]+')
-DNS1=$(mmcli -b "$BEARER_INDEX" 2>/dev/null | grep -oP '(?<=dns: )[\d.]+' | head -1)
-DNS2=$(mmcli -b "$BEARER_INDEX" 2>/dev/null | grep -oP '(?<=dns: )[\d.]+' | tail -1)
-
-ip link set wwan0 up
-ip addr flush dev wwan0
-ip addr add "${IP_ADDR}/${IP_PREFIX}" dev wwan0
-ip route add default via "$GW" dev wwan0 metric 700 2>/dev/null || true
-
-# Policy routing: traffic from wwan0 IP always exits via wwan0
-ip rule del from "${IP_ADDR}" table 100 2>/dev/null || true
-ip rule add from "${IP_ADDR}" table 100
-ip route flush table 100 2>/dev/null || true
-ip route add default via "$GW" dev wwan0 table 100
-
-echo "nameserver $DNS1" > /etc/resolv.conf.wwan0
-[ -n "$DNS2" ] && echo "nameserver $DNS2" >> /etc/resolv.conf.wwan0
-
-echo "[quectel] wwan0 up: ${IP_ADDR}/${IP_PREFIX} via ${GW}"
-```
-
-```bash
-chmod +x /home/notel/quectel-connect.sh
-```
-
-### Systemd service `/etc/systemd/system/quectel-connect.service`
-
-```ini
-[Unit]
-Description=Quectel RM520N-GL modem connect
-After=ModemManager.service network.target
-Wants=ModemManager.service
-
-[Service]
-Type=oneshot
-RemainAfterExit=yes
-ExecStart=/home/notel/quectel-connect.sh
-Restart=on-failure
-RestartSec=10
-
-[Install]
-WantedBy=multi-user.target
-```
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable quectel-connect.service
-sudo systemctl start quectel-connect.service
-
 # Check status
 sudo systemctl status quectel-connect.service
+
+# View logs
+sudo journalctl -u quectel-connect.service -f
+```
+
+### `quectel-watchdog.service` — connectivity watchdog
+
+Runs continuously in the background after `quectel-connect.service` completes. Every 30 seconds it checks:
+
+1. Modem is detected by ModemManager
+2. Modem state is `connected`
+3. `ping 8.8.8.8` via `wwan0` succeeds
+
+If any check fails **3 times in a row**, the watchdog brings down `wwan0` and restarts `quectel-connect.service`. Silent when everything is healthy — only logs warnings and reconnect events.
+
+```bash
+# Check status
+sudo systemctl status quectel-watchdog.service
+
+# Follow live logs (shows warnings and reconnects)
+sudo journalctl -u quectel-watchdog.service -f
+```
+
+### Manual setup (without install.sh)
+
+```bash
+# Deploy scripts
+sudo cp quectel-connect.sh /usr/local/bin/quectel-connect.sh
+sudo cp quectel-watchdog.sh /usr/local/bin/quectel-watchdog.sh
+sudo chmod +x /usr/local/bin/quectel-connect.sh /usr/local/bin/quectel-watchdog.sh
+
+# Deploy service files
+sudo cp quectel-connect.service /etc/systemd/system/
+sudo cp quectel-watchdog.service /etc/systemd/system/
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now quectel-connect.service
+sudo systemctl enable --now quectel-watchdog.service
 ```
 
 ---
@@ -492,4 +470,14 @@ echo -e 'AT+CFUN=1,1\r' | sudo tee /dev/ttyUSB2
 
 # Check external IP through modem
 curl --interface wwan0 https://ipinfo.io/ip
+
+# Service status
+sudo systemctl status quectel-connect.service
+sudo systemctl status quectel-watchdog.service
+
+# Watchdog live log
+sudo journalctl -u quectel-watchdog.service -f
+
+# Manual reconnect (watchdog will pick up automatically, but if needed)
+sudo systemctl restart quectel-connect.service
 ```
