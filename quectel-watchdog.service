@@ -1,0 +1,13 @@
+[Unit]
+Description=Quectel RM520N-GL watchdog
+After=quectel-connect.service
+Requires=quectel-connect.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/quectel-watchdog.sh
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
