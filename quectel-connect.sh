@@ -2,7 +2,8 @@
 # Quectel RM520N-GL connection script
 # Connects via ModemManager QMI and configures wwan0
 
-set -e
+[ -f /etc/quectel.conf ] && source /etc/quectel.conf
+APN="${APN:-internet}"
 
 MODEM_INDEX=""
 MAX_WAIT=60
@@ -44,8 +45,8 @@ done
 if [ "$STATE" = "connected" ]; then
     echo "[quectel] Already connected, reconfiguring interface..."
 else
-    echo "[quectel] Connecting with APN=internet..."
-    mmcli -m "$MODEM_INDEX" --simple-connect="apn=internet,ip-type=ipv4"
+    echo "[quectel] Connecting with APN=${APN}..."
+    mmcli -m "$MODEM_INDEX" --simple-connect="apn=${APN},ip-type=ipv4"
 fi
 
 # Find the data bearer (type=default, not default-attach)
@@ -76,9 +77,9 @@ fi
 echo "[quectel] IP: ${IP_ADDR}/${IP_PREFIX}, GW: ${GW}, DNS: ${DNS1} ${DNS2}"
 
 # Configure wwan0
-ip link set wwan0 up
+ip link set wwan0 up || { echo "[quectel] ERROR: failed to bring up wwan0"; exit 1; }
 ip addr flush dev wwan0
-ip addr add "${IP_ADDR}/${IP_PREFIX}" dev wwan0
+ip addr add "${IP_ADDR}/${IP_PREFIX}" dev wwan0 || { echo "[quectel] ERROR: failed to assign IP ${IP_ADDR}/${IP_PREFIX}"; exit 1; }
 ip route add default via "$GW" dev wwan0 metric 700 2>/dev/null || true
 
 # Policy routing: traffic from wwan0 IP always exits via wwan0.
@@ -87,9 +88,9 @@ ip route add default via "$GW" dev wwan0 metric 700 2>/dev/null || true
 # causing the carrier to receive packets with a private source IP it
 # can't reverse-NAT back — ACKs never return and TCP upload stalls within 1s.
 ip rule del from "${IP_ADDR}" table 100 2>/dev/null || true
-ip rule add from "${IP_ADDR}" table 100
+ip rule add from "${IP_ADDR}" table 100 || { echo "[quectel] ERROR: failed to add policy rule for ${IP_ADDR}"; exit 1; }
 ip route flush table 100 2>/dev/null || true
-ip route add default via "$GW" dev wwan0 table 100
+ip route add default via "$GW" dev wwan0 table 100 || { echo "[quectel] ERROR: failed to add route in table 100"; exit 1; }
 
 # Set DNS (only for wwan0 usage - doesn't override system DNS)
 echo "nameserver $DNS1" > /etc/resolv.conf.wwan0

@@ -2,9 +2,11 @@
 # Quectel RM520N-GL watchdog
 # Monitors wwan0 connectivity and reconnects if needed
 
+[ -f /etc/quectel.conf ] && source /etc/quectel.conf
+
 CHECK_INTERVAL=30
 FAIL_THRESHOLD=3
-PING_TARGET="8.8.8.8"
+PING_TARGET="${PING_TARGET:-8.8.8.8}"
 
 fail_count=0
 
@@ -16,14 +18,29 @@ reconnect() {
     log "Reconnecting..."
     ip link set wwan0 down 2>/dev/null || true
     systemctl restart quectel-connect.service
+    log "quectel-connect.service restarted, waiting 90s for it to complete..."
+    sleep 90
     fail_count=0
-    log "quectel-connect.service restarted"
+    log "Resuming health checks"
 }
 
 log "Started. Checking every ${CHECK_INTERVAL}s, threshold ${FAIL_THRESHOLD} failures."
 
 while true; do
     sleep "$CHECK_INTERVAL"
+
+    # Check ModemManager is running
+    if ! systemctl is-active ModemManager > /dev/null 2>&1; then
+        fail_count=$((fail_count + 1))
+        log "WARNING: ModemManager is not running (fail ${fail_count}/${FAIL_THRESHOLD})"
+        if [ "$fail_count" -ge "$FAIL_THRESHOLD" ]; then
+            log "Restarting ModemManager..."
+            systemctl restart ModemManager
+            sleep 30
+            fail_count=0
+        fi
+        continue
+    fi
 
     # Check bearer state via ModemManager
     MODEM_INDEX=$(mmcli -L 2>/dev/null | grep -oP '/org/freedesktop/ModemManager1/Modem/\K[0-9]+' | head -1)
