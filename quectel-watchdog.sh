@@ -51,7 +51,7 @@ while true; do
         continue
     fi
 
-    BEARER_STATE=$(mmcli -m "$MODEM_INDEX" 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' | grep -v 'power state\|packet service' | grep -oP '(?<=state: )[\w]+')
+    BEARER_STATE=$(mmcli -m "$MODEM_INDEX" --output-json 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['modem']['generic']['state'])" 2>/dev/null)
     if [ "$BEARER_STATE" != "connected" ]; then
         fail_count=$((fail_count + 1))
         log "WARNING: modem state is '${BEARER_STATE}' (fail ${fail_count}/${FAIL_THRESHOLD})"

@@ -30,7 +30,7 @@ echo "[quectel] Found modem index: $MODEM_INDEX"
 echo "[quectel] Waiting for registration..."
 WAITED=0
 while true; do
-    STATE=$(mmcli -m "$MODEM_INDEX" 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' | grep -v 'power state\|packet service' | grep -oP '(?<=state: )[\w]+')
+    STATE=$(mmcli -m "$MODEM_INDEX" --output-json 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['modem']['generic']['state'])" 2>/dev/null)
     if [ "$STATE" = "registered" ] || [ "$STATE" = "connected" ]; then
         break
     fi
